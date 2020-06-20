@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import torchvision
 
 from torch import nn, Tensor
-from torchvision.models.mobilenet import ConvBNReLU
+from torchvision.models.mobilenet import ConvBNReLU, InvertedResidual
 
 
 class EncoderBlock(nn.Sequential):
@@ -23,7 +23,7 @@ class DecoderLayer(nn.Sequential):
         padding = kernel_size // 2
         super(DecoderLayer, self).__init__(
             nn.Conv2d(in_channels, in_channels, kernel_size, padding=padding,
-                      groups=in_channels, bias=False),  # do we need bias here?
+                      groups=in_channels, bias=False),
             nn.Conv2d(in_channels, out_channels, 1, bias=True),
             nn.ReLU6(inplace=True))
 
@@ -32,7 +32,7 @@ class DecoderBlock(nn.Module):
     def __init__(self, in_channels, out_channels, skip_channels, up=2):
         super(DecoderBlock, self).__init__()
         self.up = nn.Upsample(scale_factor=up)
-        self.skip = nn.Conv2d(skip_channels, in_channels, 1, bias=False)
+        self.skip = nn.Conv2d(skip_channels, in_channels, 1, bias=False)  # add bias ???
         self.conv = DecoderLayer(in_channels, out_channels)
 
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
@@ -73,6 +73,77 @@ class HairMatteNet(nn.Module):
             DecoderLayer(64, 64),
             nn.Conv2d(64, num_classes, 1, bias=True),
             nn.Softmax2d())
+
+    def save_act(self, m: nn.Module, inp: Tensor, out: Tensor):
+        self.skips.append(out)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # to ensure we don't have any tensor cached from previous
+        # forward pass (in case if it was interrupted)
+        self.skips = []
+
+        x = self.encoder(x)
+
+        for layer in self.decoder_main:
+            x = layer(x, self.skips.pop())
+
+        return self.decoder_out(x)
+
+
+class HairMatte_MobileNetV2(nn.Module):
+    """
+    HairMatteNet with MobileNetV2 backbone
+    """
+    def __init__(self, pretrained=False, num_classes=2):
+        super(HairMatte_MobileNetV2, self).__init__()
+        mnet_v2 = torchvision.models.mobilenet_v2(pretrained=pretrained)
+        # skip last layer with 320 -> 1280 channels
+        self.encoder = mnet_v2.features[:-1]
+
+        skip_indices = [1, 3, 6, 13]
+        self.skips = []
+        for i in skip_indices:
+            self.encoder[i].register_forward_hook(self.save_act)
+
+        skip_channels = [self.encoder[i].conv[-1].num_features
+                         for i in reversed(skip_indices)]
+        dec_channels = [320] + [64] * 4
+
+        decoder = [DecoderBlock(dec_channels[i], dec_channels[i + 1], skip_ch)
+                   for i, skip_ch in enumerate(skip_channels)]
+        self.decoder_main = nn.ModuleList(decoder)
+
+        self.decoder_out = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            DecoderLayer(64, 64),
+            nn.Conv2d(64, num_classes, 1, bias=True),
+            nn.Softmax2d())
+
+        self.init_parameters(init_encoder=not pretrained)
+
+    def init_parameters(self, init_encoder=False):
+        if init_encoder:
+            for m in self.encoder.modules():
+                if isinstance(m, ConvBNReLU):
+                    nn.init.kaiming_normal_(m[0].weight, a=0)
+                elif isinstance(m, InvertedResidual):
+                    # conv layer before final BN (no ReLU)
+                    nn.init.kaiming_normal_(m.conv[-2].weight, a=1)
+                elif isinstance(m, nn.Conv2d):
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+
+        for decoder in [self.decoder_main, self.decoder_out]:
+            for m in decoder.modules():
+                if isinstance(m, DecoderLayer):
+                    # there are no ReLU after the first conv2D
+                    nn.init.kaiming_normal_(m[0].weight, a=1)
+                    nn.init.kaiming_normal_(m[1].weight, a=0)
+                elif isinstance(m, DecoderBlock):
+                    nn.init.kaiming_normal_(m.skip.weight, a=1)
+                elif isinstance(m, nn.Conv2d):
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
 
     def save_act(self, m: nn.Module, inp: Tensor, out: Tensor):
         self.skips.append(out)
