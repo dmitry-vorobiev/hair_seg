@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from torch import Tensor
+from torch.jit import trace
 
 
 def diff(x: Tensor, dim: int, pad=True) -> Tensor:
@@ -25,37 +26,40 @@ def diff(x: Tensor, dim: int, pad=True) -> Tensor:
     return d
 
 
-def _image_dx(x: Tensor) -> Tensor:
+def image_dx(x: Tensor) -> Tensor:
     dx = x[:, :, :, :-1] - x[:, :, :, 1:]
     # throw away bottom pixel row to get a square matrix
     dx = dx[:, :, :-1]
     return dx
 
 
-def _image_dy(x: Tensor) -> Tensor:
+def image_dy(x: Tensor) -> Tensor:
     dx = x[:, :, :-1] - x[:, :, 1:]
     # throw away right-most pixel column to get a square matrix
     dx = dx[:, :, :, :-1]
     return dx
 
 
-dummy_img = torch.randn(2, 3, 224, 224)
-image_dx = torch.jit.trace(_image_dx, dummy_img)
-image_dy = torch.jit.trace(_image_dy, dummy_img)
-
-
-def _conv_sep(x: Tensor, u: Tensor, v: Tensor) -> Tensor:
+def conv_sep(x: Tensor, u: Tensor, v: Tensor) -> Tensor:
     x = F.conv2d(x, u[None, None, :, None])
     x = F.conv2d(x, v[None, None, None, :])
     return x
 
 
-conv_sep = torch.jit.trace(_conv_sep, (torch.rand(2, 1, 224, 224),
-                                       torch.rand(7),
-                                       torch.rand(7)))
+def simple_norm(x: Tensor, eps=1e-7) -> Tensor:
+    norm = torch.abs(x) + eps
+    return x / norm
 
 
-def consistency_loss(image: Tensor, mask: Tensor, eps=1e-7, method="diff") -> Tensor:
+dummy_img = torch.randn(2, 1, 224, 224)
+image_dx = trace(image_dx, (dummy_img,))
+image_dy = trace(image_dy, (dummy_img,))
+conv_sep = trace(conv_sep, (dummy_img, torch.rand(7), torch.rand(7)))
+simple_norm = trace(simple_norm, (dummy_img,))
+
+
+def consistency_loss(image: Tensor, mask: Tensor, eps=1e-7, method="diff",
+                     norm_grads=True) -> Tensor:
     assert mask.size(1) == 1
     if image.size(1) > 1:
         # not sure if the real grayscale image is needed,
@@ -109,6 +113,12 @@ def consistency_loss(image: Tensor, mask: Tensor, eps=1e-7, method="diff") -> Te
 
     # mask grad magnitude
     M = torch.sqrt(M_x ** 2 + M_y ** 2)
+
+    if norm_grads:
+        I_x = simple_norm(I_x)
+        I_y = simple_norm(I_y)
+        M_x = simple_norm(M_x)
+        M_y = simple_norm(M_y)
 
     # grad disagreement term
     D = torch.pow(I_x * M_x + I_y * M_y, 2)
