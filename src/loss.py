@@ -4,6 +4,27 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
+def diff(x: Tensor, dim: int, pad=True) -> Tensor:
+    r"""
+    x.shape: (8, 3, 224, 224)
+    dim: -1
+
+    mask0: [:, :, :, 1:]
+    mask1: [:, :, :, :-1] <- shifted by 1 pixel along corresponding dim
+    """
+    first_dims = list(map(slice, x.shape[:dim]))
+    mask0 = [*first_dims, slice(1, x.size(dim))]
+    mask1 = [*first_dims, slice(0, -1)]
+    d = x[mask0] - x[mask1]
+
+    if pad:
+        pad_amount = [0, 0] * int(x.ndim)
+        pad_amount[dim * 2 + 1] = 1
+        d = F.pad(d, list(reversed(pad_amount)))
+
+    return d
+
+
 def image_dx(x: Tensor, pad=False) -> Tensor:
     dx = x[:, :, :, :-1] - x[:, :, :, 1:]
     if pad:
