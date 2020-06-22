@@ -1,0 +1,66 @@
+hydra:
+  run:
+    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+general:
+  gpu: 0
+  seed: 333
+
+distributed:
+  backend: nccl
+  url: env://
+
+data:
+  root: /media/dmitry/data/ffhq-dataset/thumbnails128x128
+  extensions:
+    - png
+  loader:
+    # batch size per each device
+    batch_size: 32
+    workers: 2
+
+  transforms:
+#    to_tensor:
+#      class: torchvision.transforms.ToTensor
+    normalize:
+      class: torchvision.transforms.Normalize
+      params:
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]
+
+model:
+  class: model.HairMatte_MobileNetV2
+  params:
+    pretrained: true
+    num_classes: 2
+
+loss:
+  class: loss.HairMatteLoss
+  params:
+    ce_weight: 1.0
+    consistency_weight: 0.5
+    method: diff
+    norm_grads: true
+
+optim:
+  class: torch.optim.Adam
+  params:
+    lr: 0.001
+    betas: [0.9, 0.999]
+    eps: 1e-8
+  step_interval: 1
+
+train:
+  epochs: 100
+  epoch_length: -1
+
+checkpoints:
+  load: null
+  save_dir: null
+  interval_epoch: 1
+  interval_iteration: 500
+  max_checkpoints: 100
+
+logging:
+  model: false
+  iter_freq: 100

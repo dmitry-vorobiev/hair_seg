@@ -1,8 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from torch import Tensor
+from torch import nn, Tensor
 from torch.jit import trace
+
+from my_types import LossWithStats
 
 
 def diff(x: Tensor, dim: int, pad=True) -> Tensor:
@@ -124,3 +126,29 @@ def consistency_loss(image: Tensor, mask: Tensor, eps=1e-7, method="diff",
     D = torch.pow(I_x * M_x + I_y * M_y, 2)
     D = torch.clamp_min(torch.ones_like(D) - D, 0)
     return torch.sum(M * D) / (torch.sum(M) + eps)
+
+
+class HairMatteLoss(nn.Module):
+    def __init__(self, ce_weight=1.0, consistency_weight=0.5, method="diff",
+                 norm_grads=True):
+        super(HairMatteLoss, self).__init__()
+        self.ce_weight = ce_weight
+        self.consistency_weight = consistency_weight
+        self.method = method
+        self.norm_grads = norm_grads
+
+    def forward(self, x: Tensor, y: Tensor, y_hat: Tensor) -> LossWithStats:
+        # fix this mess
+        ce = torch.ones(1, device=x.device)
+        consistency = consistency_loss(x, y_hat[:, :1],
+                                       method=self.method,
+                                       norm_grads=self.norm_grads)
+        stats = dict(ce=ce.item(), consistency=consistency.item())
+
+        loss = ce * self.ce_weight + consistency * self.consistency_weight
+        stats["loss"] = loss.item()
+        return loss, stats
+
+    @staticmethod
+    def stats_names():
+        return ["loss", "ce", "consistency"]

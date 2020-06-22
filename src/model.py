@@ -117,7 +117,8 @@ class HairMatte_MobileNetV2(nn.Module):
             nn.Upsample(scale_factor=2, mode="nearest"),
             DecoderLayer(64, 64),
             nn.Conv2d(64, num_classes, 1, bias=True),
-            nn.Softmax2d())
+            # nn.Softmax2d()
+        )
 
         self.init_parameters(init_encoder=not pretrained)
 
